@@ -1,0 +1,119 @@
+
+####################################### No use #######################################
+
+
+#######################################
+# K fold cross validation 
+#######################################
+
+# RES_fold <-  list()  
+# RES_fold[1] <- k_fold_meny(df = df_wide_resume, k = 10)
+# RES_fold[2] <- k_fold_meny(df = df_wide_hw, k = 10)
+# RES_fold[3] <- k_fold_meny(df = df_wide_fourier, k = 10)
+# RES_fold[4] <- k_fold_meny(df = df_wide_haar, k = 10)
+# RES_fold[5] <- k_fold_meny(df = df_wide, k = 10)
+
+# RES <- data.frame(matrix(unlist(RES_fold),ncol=5,byrow = T))
+#colnames( RES ) <- c( "AUC",  "CI_lower",  "CI_upper",  "ACCURACY",
+#										 	"Time_to_predict")
+#row.names( RES ) <- c( "df_resume", "df_holt_winters","df_fourier","df_haar")
+#write.table(RES, file = "/home/mcherifa/Mimic/resultats/k_fold.csv", 
+#		sep = "\t", row.names = F)
+
+
+#######################################
+# stratified K fold cross validation 
+#######################################
+
+#RES_fold_stratified <-  list()  
+#RES_fold_stratified[1] <- stratified_k_fold_meny(df = df_wide_resume, k = 10)
+#RES_fold_stratified[2] <- stratified_k_fold_meny(df = df_wide_hw, k = 10)
+#RES_fold_stratified[3] <- stratified_k_fold_meny(df = df_wide_fourier, k = 10)
+#RES_fold_stratified[4] <- stratified_k_fold_meny(df = df_wide_haar, k = 10)
+# RES_fold[5] <- k_fold_meny(df = df_wide, k = 10)
+
+#RES_stratified <- data.frame(matrix(unlist(RES_fold_stratified),ncol=5,byrow = T))
+#colnames( RES_stratified ) <- c( "AUC",  "CI_lower",  "CI_upper",  "ACCURACY",
+#                      "Time_to_predict")
+#row.names( RES_stratified ) <- c( "df_resume", "df_holt_winters",
+#                                  "df_fourier","df_haar")
+#write.table(RES, file = "/home/mcherifa/Mimic/resultats/k_fold_stratified.csv", 
+#            sep = "\t", row.names = F)
+
+
+
+deeplearning <- function(liste = train_test ){
+
+  # set.seed(20191) 
+  
+  RES <- NULL
+  
+  # jeu test 
+  
+  X.test <- liste$testDesc
+  y.test <- liste$testClass
+  
+  # jeu d'apprentissage
+  
+  X.app <- liste$trainDesc
+  y.app <- liste$trainClass
+  
+  before <- Sys.time()
+  
+  model <- nnet(y.app  ~ ., 
+                data = cbind(X.app, y.app),
+                size = 3, 
+                MaxNWts = 1e+05, 
+                decay = 1.6,
+                maxit = 200,
+                trace = F)
+  
+  predictions <- predict(model, cbind(X.test,y.test))
+  
+  after <- Sys.time()
+  
+  class_predict_3 <- max.col(predictions)
+  target <- max.col(y.test)
+  
+  # matrice_confusion <- CrossTable(class_predict_3,target,
+  #                               dnn = c("Predicted","Observed"))
+  
+  # Accuracy 
+  matrice_confusion <- as.matrix(table(actual = target,
+                                       predicted = class_predict_3))
+  print(matrice_confusion)                             
+  sensi <- matrice_confusion[2,2] / (matrice_confusion[2,2] + matrice_confusion[1,2] ) 
+	speci <- matrice_confusion[1,1] / (matrice_confusion[1,1] + matrice_confusion[2,1] ) 
+	vpp <- matrice_confusion[2,2] / (matrice_confusion[2,2] + matrice_confusion[2,1] ) 
+ 	vpn <- matrice_confusion[1,1] / (matrice_confusion[1,1] + matrice_confusion[2,1] )                                      
+  # print(matrice_confusion)
+  n <- sum(matrice_confusion)
+  diag <- diag(matrice_confusion)
+  precision <- sum(diag) / n
+  
+  # interval de confiance 
+  
+  AUC <- roc(as.numeric(target), as.numeric(class_predict_3),ci = T)
+  CI.AUC <- ci.auc(AUC)
+  
+  # Time
+  time <- after - before
+  
+  # Result 
+  
+  RES <- list(
+    AUC = CI.AUC[2],
+    CI_lower = CI.AUC[1],
+    CI_upper =  CI.AUC[3],
+    ACCURACY = precision,
+    Time_to_predict = time,
+    Sensitivity = sensi,
+    Specificity = speci,
+    TPV = vpp,
+    FPV = vpn
+  )
+
+  return(RES)
+  
+}
+

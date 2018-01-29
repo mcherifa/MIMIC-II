@@ -1,0 +1,19 @@
+\documentclass{article}
+\usepackage[latin1]{inputenc}
+\usepackage{amsmath,amssymb}
+\usepackage{rotating}
+\usepackage{multirow,multicol,natbib,color}
+\usepackage{url,hyperref}
+\usepackage[width=14.5cm,height=20cm]{geometry}
+\tolerance=1000
+\title{Description de la base}
+\date{\today}
+\begin{document}
+\SweaveOpts{concordance=TRUE}
+\maketitle
+\tableofcontents
+
+
+
+
+\end{document}

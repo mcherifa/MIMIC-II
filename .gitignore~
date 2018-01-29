@@ -1,0 +1,7 @@
+# Les ligne commençant par '#' sont des commentaires.
+# Ignorer tous les fichiers nommés foo.txt
+data
+resultats
+rsa
+rsconnect
+.DS_Store
