@@ -1,8 +1,11 @@
 # Les ligne commençant par '#' sont des commentaires.
 # Ignorer tous les fichiers nommés foo.txt
 data
-ahe	
 resultats
+resultats_rewieving
+gitrsa
+gitrsa.pub
+installation.md
 rsa
 rsconnect
 .DS_Store
