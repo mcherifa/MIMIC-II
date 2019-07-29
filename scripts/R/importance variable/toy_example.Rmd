@@ -1,0 +1,138 @@
+---
+knit: "bookdown::pdfdocument2"
+title: "A simple simulation study"
+author: ["Ményssa Cherifa", "Samuel Doucet", "Antoine Chambaz"]
+date: "09/26/2018"
+description: "To do..."
+encoding: "UTF-8"
+documentclass: article
+---
+
+# Introduction
+
+This is  a brief illustration  of the note we  sent about the  "definition and
+estimation of a data-adaptive variable  importance measure of the influence of
+a subset of predictors relative to a prediction algorithm".
+
+# A simple simulation study
+
+```{r intro}
+library(tidyverse)
+expit <- plogis
+```
+
+## Defining the experiment
+
+We define an experiment of law $P_{0}$ that generates an observation $O \equiv
+(X_1, X_2, X_3, Y)$ where $X_1$,  $X_2$ and $X_3$ are drawn independently from
+the $N(0,1)$ law  and, conditionally on them, $Y$ is  drawn from the Bernoulli
+law with parameter
+\begin{equation}
+  \textrm{expit}\left(X_1 + \beta X_{2}\right)
+\end{equation}
+where $\beta$ is a fine-tune parameter.
+
+```{r get-sample}
+get_sample <- function(n, beta = 0) {
+  X <- matrix(rnorm(3 * n), ncol = 3)
+  prob <- expit(X[, 1] + beta * X[, 2])
+  Y <- rbinom(n, size = 1, prob = prob)
+  out <- cbind(X, Y)
+  colnames(out) <- c("X1", "X2", "X3", "Y")
+  return(out)
+}
+dat <- get_sample(1e3, beta = 2)
+dat %>% as.tibble
+```
+
+## Defining a simple algorithm
+
+We consides a very simple algorithm $\widehat{\Psi}$ for the prediction of $Y$
+based on $(X_1, X_2, X_3)$. It is based on a generalized linear model.
+
+
+```{r algo}
+algo <- function(dat) {
+  dat <- as.data.frame(dat)
+  fit <- glm(Y ~ ., data = dat, family = "binomial")
+  Gbar <- function(newdata) {
+    newdata <- as.data.frame(newdata)
+    predict(fit, newdata, type = "response")
+  }
+  return(Gbar)
+}
+
+Gbar1 <- algo(dat) ## output of 'algo' on full data
+Gbar2 <- algo(dat[, c("X1", "Y")]) ## output of 'algo' deprived of X2 and X3
+Gbar3 <- algo(dat[, "Y", drop = FALSE]) ## output of reference algorithm
+```
+
+## Implementing the (pointwise) estimation of the measure of influence
+
+The   function   `compute_influence`   computes    the   point   estimate   of
+$\Delta_{n,P_{0}}^{L,J} (\widehat{\Psi})$ for a given subset $J$ of the set of
+predictors and the least-squares loss function $L$.
+
+```{r influence}
+compute_influence <- function(J, dat, algo, V = 5) {
+  if ("Y" %in% J) {
+    stop("Cannot include 'Y' in 'J'.\n")
+  }
+  if (length(setdiff(J, colnames(dat))) > 0) {
+    stop("Argument 'J' is not valid.\n")
+  }
+  B_n <- rep(1:V, length.out = nrow(dat))
+  R_n1 <- 0
+  R_n2 <- 0
+  R_n3 <- 0
+  for (v in 1:V) {
+    ## learning
+    training <- dat[B_n != v, ]
+    Gbar1 <- algo(training) ## output of 'algo' on full data
+    Gbar2 <- algo(training[, setdiff(colnames(dat), J)]) ## output of 'algo' deprived of X^J
+    Gbar3 <- algo(training[, "Y", drop = FALSE]) ## output of reference algorithm
+    ## testing
+    testing <- dat[B_n == v, ]
+    R_n1 <- R_n1 + mean((testing[, "Y"] - Gbar1(testing))^2) / V
+    R_n2 <- R_n2 + mean((testing[, "Y"] - Gbar2(testing))^2) / V 
+    R_n3 <- R_n3 + mean((testing[, "Y"] - Gbar3(testing))^2) / V 
+  }
+  S_n1 <- 1 - R_n1 / R_n3
+  S_n2 <- 1 - R_n2 / R_n3
+  Delta_n <- S_n1 - S_n2 ## quantifies the influence of X^J
+  return(c(Delta_n = Delta_n, S_n1 = S_n1, S_n2 = S_n2))
+}
+
+influence_X3 <- compute_influence("X3", dat, algo)
+influence_X2 <- compute_influence("X2", dat, algo)
+```
+
+## Simulation study
+
+We  compute the  measures of  influence for  a variety  of values  of $\beta$,
+sample size $n$ and subset $J$. The figure summarizes our findings.
+
+```{r simulation-study}
+beta <- seq(-2, 2, length.out = 100)
+nn <- c(1e2, 5e2, 1e3)
+
+influences <- matrix(NA, ncol = 4, nrow = 0,
+                     dimnames = list(c(), c("beta", "n", "X2", "X3")))
+for (n in nn) {
+  for (bb in beta) {
+    dat <- get_sample(n, beta = bb)
+    influences <- rbind(influences,
+                        c(bb, n,
+                          compute_influence("X2", dat, algo)[1],
+                          compute_influence("X3", dat, algo)[1]))
+  }
+}
+
+influences %>% as.tibble %>%
+  gather(`X2`, `X3`, key = "J", value = "influence") %>%
+  mutate(n = as.factor(n)) %>% 
+  ggplot() +
+  geom_point(aes(x = beta, y = influence, color = n)) +
+  facet_wrap(~ J, nrow = 2)
+```
+

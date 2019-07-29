@@ -1,0 +1,353 @@
+########################
+# Essai Superlearner 
+########################
+
+# model : reseau de neurone, SVM, KNN, arbre, regression logistique, neuro fuzzy network 
+# readRDS("/Users/menyssa/Documents/GitHub/Mimic/data/clean/mimic2/df_modelisation.rds")
+
+library(tidyverse)
+library(origami)
+library(sl3)
+library(SuperLearner)
+library(glmnet)
+library(ggplot2)
+library(nnet)
+library(randomForest)
+library(ROCR)
+library(gbm)
+library(polspline)
+library(gam)
+library(arm)
+library(ipred)
+library(xgboost)
+library(pROC)
+library(verification)
+library(caret)
+library(plyr) 
+library(dplyr)
+library(doParallel)
+
+ 
+registerDoParallel(cores = 3)
+
+df_modelisation <-
+    readRDS("/home/menyssa/Mimic/data/clean/mimic2/df_modelisation.rds") %>%      
+  subset(age < 100 & eevent == 0) %>%
+  subset(select = c(-identif, -eevent, -care_unit, -periode)) %>%
+  mutate(
+    id = as.numeric(as.character(id)),
+    # periode = as.numeric(as.character(periode)),
+    event   = as.factor(as.character(event)),
+    gender  = factor(gender, levels = c("F","M"), labels = c("1","0")),
+    amine   = factor(amine,  levels =  c(0,1), labels = c("0","1")),
+    curare  = factor(curare, levels = c(0,1), labels = c("0","1")),
+    sedate  = factor(sedate, levels = c(0,1), labels = c("0","1")),
+    venti   = factor(venti,  levels =  c(0,1), labels = c("0","1"))
+  )
+
+# Tirage au sort une ligne par id 
+df_sample <- df_modelisation 
+                                        # %>% 
+#   group_by(id) %>% 
+#   sample_n(size = 1)  %>%
+#   data.frame()
+
+  
+#  Sous df_sample en fonction méthodes pour résumer
+sample_resume 	<- df_sample[,c(1:12,
+                               grep("m_",names(df_sample)),
+                               grep("v_",names(df_sample)))]
+
+sample_lineaire <- df_sample[,c(1:12,
+                                grep("alpha_",names(df_sample)),
+                                grep("beta_",names(df_sample)))]
+
+sample_arma 		<- df_sample[,c(1:12,
+                              grep("ar_",names(df_sample)),
+                              grep("ma_",names(df_sample)),
+                              grep("inter_",names(df_sample)))]
+
+sample_haar 		<- df_sample[,c(1:12,
+                              grep("W1_",names(df_sample)),
+                              grep("V1_",names(df_sample))
+)]
+
+Modelisation <- function(data){
+  
+  data <- subset(data, select = -id)
+  data$event <- as.factor(ifelse(data$event == 0, "class_1", "class_0"))
+  
+  inTrain <- createDataPartition(data$event, p = 0.7)[[1]]
+  training <- data[inTrain,]
+  testing <- data[-inTrain,]
+  
+  numFolds <- trainControl(method = 'cv',
+                           number = 5,
+                           classProbs = TRUE,
+                           verboseIter = TRUE,
+                           summaryFunction = twoClassSummary)
+  
+  # glm
+  
+  fit <- train(event ~ .,
+               data = training,
+               method = 'glm',
+               metric = "ROC",
+               preProcess = c('center', 'scale'),
+               trControl = numFolds)
+  
+  out_glm <- fit$results
+  
+  # mlp
+  
+  fit1 <- train(event ~ .,
+                data = training,
+                method = 'mlp',
+                metric = "ROC",
+                preProcess = c('center', 'scale'),
+                tuneGrid = expand.grid(size = 6),
+                trControl = numFolds)
+  
+  out_mlp <- fit1$results
+  
+  
+  # rn
+  
+  fit2 <- train(event ~ .,
+                data = training,
+                method = 'nnet',
+                metric = "ROC",
+                maxit = 1000,
+                preProcess = c('center', 'scale'),
+                trControl = numFolds,
+                tuneGrid = expand.grid(size = 6, decay = c(1)))
+  
+  out_nnet <- fit2$results
+  
+  # rf
+  
+  mtry <- sqrt(ncol(training))
+  
+  fit3 <- train(event ~.,
+                data = training,
+                method = "rf",
+                metric = "ROC",
+                tuneGrid = expand.grid(.mtry=mtry),
+                trControl = numFolds)
+  
+  out_rf <- fit3$results
+  
+  
+  probs <- predict(fit, newdata = testing, type='prob')
+  aire1  <- roc(as.numeric(testing$event), as.numeric(max.col(probs)),ci = T)
+  probs <- predict(fit1, newdata = testing, type='prob')
+  aire2  <- roc(as.numeric(testing$event), as.numeric(max.col(probs)),ci = T)
+  probs <- predict(fit2, newdata = testing, type='prob')
+  aire3  <- roc(as.numeric(testing$event), as.numeric(max.col(probs)),ci = T)
+  probs <- predict(fit3, newdata = testing, type='prob')
+  aire4  <- roc(as.numeric(testing$event), as.numeric(max.col(probs)),ci = T)
+  
+  
+  
+  names <- data.frame(noms = c("glm","mlp","rf","nnet"))
+  out   <- rbind.fill(out_glm,out_mlp,out_rf, out_nnet)
+  out   <- cbind(names,out)  
+  
+  out <- data.frame(out, 
+                    auc = c(aire1$ci[2],aire2$ci[2],aire3$ci[2],aire4$ci[2]),
+                    auc_lo = c(aire1$ci[1],aire2$ci[1],aire3$ci[1],aire4$ci[1]),
+                    auc_up = c(aire1$ci[3],aire2$ci[3],aire3$ci[3],aire4$ci[3]))
+  return(out)
+}
+
+##################
+# Modelisation sans superlearner 
+##################
+
+
+lineaire    <-  Modelisation(data = sample_lineaire)
+lineaire    <- cbind(type = rep("Lineraire",4), lineaire)
+statistique <-  Modelisation(data = sample_resume)
+statistique <- cbind(type = rep("statistique",4), statistique)
+arma    <-  Modelisation(data = sample_arma)
+arma    <- cbind(type = rep("arma",4), arma)
+haar    <-  Modelisation(data = sample_haar)
+haar    <- cbind(type = rep("haar",4), haar)
+
+##################
+# Resultats
+##################
+
+output <- rbind(statistique,lineaire,arma,haar)
+write.csv(output, file='/Users/menyssa/Desktop/output_tout.csv', row.names = FALSE, quote = FALSE)
+
+##################
+# Modelisation: superlearner 
+##################
+
+df_modelisation <- readRDS("/Users/menyssa/Documents/GitHub/Mimic/data/clean/mimic2/df_modelisation.rds") %>%    
+  subset(age < 100 & eevent == 0) %>%
+  subset(select = c(- identif, - eevent, - care_unit)) %>%
+  mutate(
+    periode = as.numeric(as.character(periode)),
+    id      = as.numeric(as.character(id)),
+    gender  = as.numeric(ifelse(gender == "M",1,0))
+  )
+# Tirage au sort une ligne par id 
+df_sample <- df_modelisation %>%
+  group_by(id) %>%
+  sample_n(size = 1)  %>%
+  data.frame()
+
+
+#  Sous df_sample en fonction méthodes pour résumer
+sample_resume 	<- df_sample[,c(1:12,
+                               grep("m_",names(df_sample)),
+                               grep("v_",names(df_sample)))]
+
+sample_lineaire <- df_sample[,c(1:12,
+                                grep("alpha_",names(df_sample)),
+                                grep("beta_",names(df_sample)))]
+
+sample_arma 		<- df_sample[,c(1:12,
+                              grep("ar_",names(df_sample)),
+                              grep("ma_",names(df_sample)),
+                              grep("inter_",names(df_sample)))]
+
+sample_haar 		<- df_sample[,c(1:12,
+                              grep("W1_",names(df_sample)),
+                              grep("V1_",names(df_sample))
+)]
+
+SL.nnet.decay <- function(Y, X, newX, family, obsWeights, size = 6, ...){
+  if(family$family == "gaussian") {
+    fit.nnet <- nnet::nnet(x = X, y = Y, size = size, linout = TRUE, trace = FALSE, maxit = 500, weights = obsWeights)
+  }
+  if(family$family=="binomial") {
+    fit.nnet <- nnet::nnet(x = X, y = Y, size = size, decay = 1, trace = FALSE, maxit = 500, linout = FALSE, weights = obsWeights)
+  }
+  pred <- predict(fit.nnet, newdata = newX, type = "raw")
+  fit <- list(object = fit.nnet)
+  out <- list(pred = pred, fit = fit)
+  class(out$fit) <- c("SL.nnet.decay")
+  return(out)
+}
+
+
+# Library
+SL.library <- c("SL.glm",
+                "SL.nnet.decay",
+                "SL.randomForest")
+
+# Apprentissage  
+
+
+data <- subset(df_sample, select = -id)
+inTrain <- createDataPartition(data$event, p = 0.7)[[1]]
+training <- data[inTrain,]
+testing <- data[-inTrain,]
+
+V = 5 
+fit.mod2.AUC <- CV.SuperLearner(Y = sample_haar$event,
+                                X = subset(sample_haar, select = -c(id , event)),
+                                SL.library = SL.library,
+                                family     = binomial(),
+                                method     = "method.AUC",
+                                verbose    = TRUE, 
+                                V          = V)
+summary(fit.mod2.AUC)
+
+fit.plot <- summary(fit.mod2.AUC)
+fit.plot <- fit.plot$Table
+fit.plot <- fit.plot[order(fit.plot$Ave, decreasing = T),]
+fit.plot$Algorithm <- factor(fit.plot$Algorithm,
+                             levels = fit.plot$Algorithm[order(fit.plot$Ave, decreasing = F)])
+
+# Renomme les Algorithmes (légende et axe Y)
+
+fit.plot$Algorithm <- mapvalues(fit.plot$Algorithm,"SL.rpart_All", "Recursive Partitioning")
+fit.plot$Algorithm <- mapvalues(fit.plot$Algorithm,"SL.glm_All", "Generalized Linear\nModel")
+fit.plot$Algorithm <- mapvalues(fit.plot$Algorithm,"SL.glmnet_All", "Penalized GLM")
+fit.plot$Algorithm <- mapvalues(fit.plot$Algorithm,"SL.nnet_All", "Neural Network")
+fit.plot$Algorithm <- mapvalues(fit.plot$Algorithm,"SL.stepAIC_All", "Stepwise regression")
+fit.plot$Algorithm <- mapvalues(fit.plot$Algorithm,"SL.gbm.1_All", "Gradient Boosting")
+fit.plot$Algorithm <- mapvalues(fit.plot$Algorithm,"SL.gam_All", "Generalized Additive\nModel")
+fit.plot$Algorithm <- mapvalues(fit.plot$Algorithm,"SL.randomForest.5_All", "Random Forest")
+fit.plot$Algorithm <- mapvalues(fit.plot$Algorithm,"SL.bayesglm_All", "Bayesian\nGeneralized Linear Model")
+fit.plot$Algorithm <- mapvalues(fit.plot$Algorithm,"SL.ipredbagg_All", "Bagging\nclassifier trees")
+fit.plot$Algorithm <- mapvalues(fit.plot$Algorithm,"SL.glm.interaction_All", "GLM interaction")
+fit.plot$Algorithm <- mapvalues(fit.plot$Algorithm,"SL.xgb_All", "XG boost")
+
+
+fit.plot <- fit.plot[fit.plot$Algorithm != "SL.randomForest.9_All" &
+                       fit.plot$Algorithm != "SL.xgb.9_All",] 
+
+#& fit.plot$Algorithm != "SL.nnet.3_All",]
+
+# Produire le plot AUC"
+ggplot(data = fit.plot, aes(x = Ave, y = Algorithm, color = Algorithm)) +
+  geom_errorbarh(aes(xmin = Min, xmax = Max), colour = "black", height = .1) +
+  geom_point(size = 2.5, shape = 20, fill = "white") +
+  xlim(0, 1) +
+  xlab(paste(5, "fold Cross-Validated AUC")) +
+  geom_text(aes(label = round(Ave,2), x = Ave), vjust = -.6, hjust = .5, show.legend = FALSE, colour = "black") +
+  geom_text(aes(label = round(Min,2), x = Min), vjust = .5, hjust = 1.2, show.legend = FALSE, colour = "light grey") +
+  geom_text(aes(label = round(Max,2), x = Max), vjust = .5, hjust = -.2, show.legend = FALSE, colour = "light grey") +
+  theme_bw() +
+  scale_colour_hue(guide = guide_legend(reverse = TRUE)) +
+  theme(legend.position = "none",
+        axis.text.y = element_text(size = 10),
+        axis.title = element_text(face = "bold", size = 12))
+
+
+# Remove columns with near zero variance.
+# nzv <- nearZeroVar(data)
+# data <- data[,-nzv]
+# test <- test[,-nzv]
+# data$TARGET <- y
+
+# ##### Removing constant features
+# cat("\n## Removing the constants features.\n")
+# for (f in names(data)) {
+#   if (length(unique(data[[f]])) == 1) {
+#     cat(f, "is constant in train. We delete it.\n")
+#     data[[f]] <- NULL
+#     # test[[f]] <- NULL
+#   }
+# }
+# 
+# ##### Removing identical features
+# features_pair <- combn(names(data), 2, simplify = F)
+# toRemove <- c()
+# for(pair in features_pair) {
+#   f1 <- pair[1]
+#   f2 <- pair[2]
+#   
+#   if (!(f1 %in% toRemove) & !(f2 %in% toRemove)) {
+#     if (all(data[[f1]] == data[[f2]])) {
+#       cat(f1, "and", f2, "are equals.\n")
+#       toRemove <- c(toRemove, f2)
+#     }
+#   }
+# }
+# feature.names <- setdiff(names(data), toRemove)
+# data <- data[, feature.names]
+# test <- test[, feature.names[feature.names != 'TARGET']]
+
+
+#results <- predict(fit3, newdata = testing)
+#conf  <- confusionMatrix(results, testing$event)
+#conf
+# table(max.col(probs),testing$event)
+# Assemble output format: ID, prob.
+# output <- data.frame(ID           = data$id,
+#                      TARGET_nnet  = probs$class_0,
+#                      TARGET_rpart = ,
+#                      TARGET_glm = )
+
+
+
+
+
+
+

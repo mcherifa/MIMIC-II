@@ -185,7 +185,7 @@ hr.ci <- function(obj, alpha=0.05)
 #   "b": binaire et on ne veut que la modalité "categ"
 #   "c": quantitative
 # usage :
-# temp<-NULL
+# temp <- NULL
 # temp <- descr("Age2", "inot_levo", icas_inotlev3, temp)
 # temp <- descr("Sex", "inot_levo", icas_inotlev3, temp, type="b",categ="FEMALE")
 # temp <- descr("InitialWeight.kg.", "inot_levo", icas_inotlev3, temp, type="c",desc="med")

@@ -1,4 +1,4 @@
-setwd("~/Mimic/scripts/R/SQL")
+setwd("~/Recherche/Mimic-II//scripts/R/SQL")
 
 # sudo apt-get install libpq-dev
 library(RPostgreSQL)

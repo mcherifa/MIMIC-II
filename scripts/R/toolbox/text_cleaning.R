@@ -1,6 +1,3 @@
-library(tm)
-library(stringr)
-
 improve_text <- function(text) {
   # Amélioration finale du texte avec :
   # - retrait des accents
@@ -19,7 +16,7 @@ improve_text <- function(text) {
   # retrait ponctuation
   text = gsub("[[:punct:]]", "", text)
   # retrait chiffres
-  text = gsub("[[:digit:]]", "", text)
+  #text = gsub("[[:digit:]]", "", text)
   # remove links
   text = gsub("http\\w+", "", text)
   # retrait des mots 'usuels'
@@ -77,7 +74,7 @@ clean_colnames <- function(data){
   d <- gsub("^n(um|umero)?_","num_",d)
 
   # remove leading numbers
-  d <- gsub('^([0-9].*)','_\\1',d)
+  #d <- gsub('^([0-9].*)','_\\1',d)
 
   colnames(data) <- d
 

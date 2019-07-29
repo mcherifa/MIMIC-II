@@ -1,0 +1,172 @@
+---
+title: "Modelisation avec le Super Learner"
+author: "Menyssa CHERIFA"
+date: "29 mars 2018"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# 1 - Changement des fichiers source
+Préalablement il faut charger les fichiers : **packages.R**,  **library_superlearner.R** et 
+**fonctions_superlearner**.
+Le permier contient tous les packages necessaires et le second les modèles et le dernier toutes les fonctions nécessaires.
+
+```{r,  include=FALSE, cache=FALSE}
+
+set.seed(1)
+
+source("/home/menyssa/Mimic/scripts/R/toolbox/packages.R")
+source("/home/menyssa/Mimic/scripts/R/toolbox/library_superlearner.R")
+source("/home/menyssa/Mimic/scripts/R/toolbox/fonctions_superlearner.R")
+
+```
+
+# 2 - Modélisation avec une période 
+Dans cette partie, on tire au sort une periode de 90 min par patient et on prédit la survenue d'un AHE dans les 20 dernieres minutes de la periode.
+
+```{r}
+#   Lecture 
+df_modelisation <- readRDS("/home/menyssa/Mimic/data/clean/mimic2/df_modelisation.rds") %>%  
+  subset(select = -c(event_cum, curare,admission_type_descr, periode, event_24h))%>%
+  mutate(
+    id      = as.numeric(as.character(id)),
+    gender  = as.numeric(ifelse(gender == "M",1,0)),
+    care_unit = as.factor(care_unit)
+  )
+
+#  Dummy variable care_unit
+df_modelisation <- data.frame(stats::model.matrix( ~ .-1, data = df_modelisation))
+names(df_modelisation)
+
+```
+Au total on a 1151 patient dans la base df_modelisation, 57 variables dont l'outcome est la variable **event**. On tire au sort une période de 90 par patient et on créée les sous data en sélectionnant uniquement les variables à baseline et le type de méthode utilisée pour résumer l'information des signaux.
+
+```{r}
+#  Tirage au sort une ligne par id 
+df_sample <- df_modelisation %>%
+  group_by(id) %>%
+  sample_n(size = 1)  %>%
+  data.frame()
+
+#  Sous df_sample en fonction méthodes pour résumer
+#  les signaux ie HR, SPO2, SAP, MAP, DAP
+
+#  Moyenne Variance 
+sample_resume	<- df_sample[,c(1:13,
+                              grep("m_",names(df_sample)),
+                              grep("v_",names(df_sample)))]
+#  Modele linéaire 
+sample_lineaire <- df_sample[,c(1:13,
+                                grep("alpha_",names(df_sample)),
+                                grep("beta_",names(df_sample)))]
+#  Modele ARMA
+sample_arma 		<- df_sample[,c(1:13,
+                              grep("ar_",names(df_sample)),
+                              grep("ma_",names(df_sample)),
+                              grep("inter_",names(df_sample)))]
+
+#  Ondelette de Haar 
+sample_haar 		<- df_sample[,c(1:13,
+                              grep("W1_",names(df_sample)),
+                              grep("V1_",names(df_sample)))]
+```
+
+Ensuite on passe à la modelisation avec le **Superlearner** et on applique la fonction *Modelisation superlearner*
+avec une 10 folds cross-validation.
+
+```{r,include=F}
+##########
+# Modelisation Superlearner
+##########
+
+a <- Modelisation_superlearner(data = sample_haar,    folds = 10)
+b <- Modelisation_superlearner(data = sample_arma,    folds = 10)
+c <- Modelisation_superlearner(data = sample_lineaire,folds = 10)
+d <- Modelisation_superlearner(data = sample_resume,  folds = 10)
+
+```
+
+```{r}
+##########
+# Graphiques
+##########
+
+blancheur <- theme(
+  panel.border = element_blank(),
+  panel.grid.major = element_blank(),
+  panel.grid.minor = element_blank(),
+  legend.justification = c(1, 0.25),
+  legend.position = "right",
+  legend.background = element_rect(fill="gainsboro",
+                                   size=0.5, linetype="solid", 
+                                   colour ="black"),
+  # legend.position = "none",
+  panel.background = element_rect(fill = "white",
+                                  colour = "white"),
+  axis.line = element_line(colour = "black")
+)
+
+
+#  1 - Seuils pour la sensibilité et la specificité
+temp <- rbind(a$performances_validation$matrice_resultats,
+            b$performances_validation$matrice_resultats,
+            c$performances_validation$matrice_resultats,
+            d$performances_validation$matrice_resultats)
+
+temp$type <- c(rep("Haar",51), 
+             rep("ARMA",51), 
+             rep("Linear",51), 
+             rep("Statistical measures",51))
+temp <- subset(temp, select = - accur)
+
+mdata <- melt(temp, id=c("seuil_prediction", "type"))
+mdata$id <- paste0(mdata$type,"_",mdata$variable)
+
+sensiplot <- ggplot(mdata, aes(x = seuil_prediction, y = value,colour=id))+
+  geom_line(aes(linetype=variable, color=type))+blancheur +
+  labs(title="Super Learner's Performances", y="Value", x="Thresholds")+
+  scale_x_continuous( limits=c(0,0.5)) +
+  scale_color_manual(name="Preprocessing Methods", 
+                     labels = c("ARMA", "Haar", "Linear", "Statistical measures"), 
+                     values = c("ARMA"="black", "Haar"="grey", "Linear"="orange","Statistical measures"="red"))+
+  scale_linetype_discrete(name = "Measures", labels = c("Sensitivity", "Specificity"))
+
+
+#  2 - Plot pour les AUC
+temp <- data.frame(
+  fpr = c(a$performance_validation@x.values[[1]],
+              b$performance_validation@x.values[[1]],
+              c$performance_validation@x.values[[1]],
+              d$performance_validation@x.values[[1]]),
+  tpr = c(a$performance_validation@y.values[[1]],
+          b$performance_validation@y.values[[1]],
+          c$performance_validation@y.values[[1]],
+          d$performance_validation@y.values[[1]]),
+  type = c(rep("Haar",343), rep("ARMA",343), rep("Linear",343), rep("Statistical measures",343))
+)
+
+aucplot <- ggplot(temp, aes(x = fpr, y = tpr, colour =type))+
+  geom_line()+ 
+  blancheur + 
+  geom_abline(intercept=0,slope=1, linetype="dashed",size= 0.2) +
+  scale_x_continuous("False Positive Rate (1 - Specificity)", limits=c(0,1)) +
+  scale_y_continuous("True Positive Rate (Sensitivity)", limits=c(0,1)) +
+  scale_color_manual(name=" ", 
+                     labels = c("ARMA", "Haar", "Linear", "Statistical measures"), 
+                     values = c("ARMA"="black", "Haar"="grey", "Linear"="orange","Statistical measures"="red"))
+print(sensiplot)
+print(aucplot)
+```
+
+
+
+
+
+
+
+

@@ -10,11 +10,8 @@ library(stringr)
 library(reshape2)
 library(VIM)
 
-# chemin données
-dest_data <- "~/Mimic/data/clean/"
-
 # Connexion à la base SQL 
-source("~/Mimic/scripts/R/SQL/connection_mimic2.R")
+source("~/Recherche/Mimic-II/scripts/R/SQL/connection_mimic2.R")
 
 #######################################################
 # -------- Tables présentent dans la base PSQL 
@@ -27,49 +24,114 @@ dbListTables(con)
 #######################################################
 
 infos.mimic2 <- dbGetQuery(con,"
-	select subject_id, icustay_id, hadm_id, gender,
-	round(icustay_admit_age) as age, 
-	((hospital_admit_dt -  dob) / 365.25 ) as age_bis,
-	height, weight_first, sapsi_first, sofa_first
-	from icustay_detail 
-	where icustay_admit_age IS NOT NULL 
-	order by subject_id;"
-) 
-
-# Motif admission : pas standardisé
-
-motif_admission <- dbGetQuery(con,"
-	select subject_id, admission_type_descr
-	from demographic_detail ;"
+WITH tmp as
+(
+    SELECT adm.hadm_id, adm.subject_id, adm.admit_dt, adm.disch_dt,
+    pat.subject_id, pat.dob , pat.dod
+    , ROW_NUMBER() OVER (PARTITION BY hadm_id ORDER BY admit_dt) AS FirstAdmission
+    FROM admissions adm
+    FULL JOIN d_patients pat
+    ON adm.subject_id = pat.subject_id
+    -- Hospitalisations des plus de 15 ans 
+    -- AND extract(YEAR FROM admit_dt) - extract(YEAR FROM dob) > 15
+)
+SELECT
+ 	-- table icustayevents ie
+  ie.subject_id,
+  ie.icustay_id,
+  ie.intime as admission_icu,
+  ie.outtime as discharge_icu, 
+  -- table temporaire temp
+  temp.dob as date_of_birth, 
+  temp.dod as date_of_dead,
+  temp.admit_dt as admission_hos,
+  temp.disch_dt as discharge_hop,
+  -- Table icustay_detail ic
+  case
+  when ic.icustay_first_careunit = 'MICU'  then 1
+  when ic.icustay_first_careunit = 'SICU'  then 2
+  when ic.icustay_first_careunit = 'TSICU' then 3
+  when ic.icustay_first_careunit = 'CSRU'  then 4
+  when ic.icustay_first_careunit = 'NICU'  then 5
+  else 6 end as care_unit,
+  ic.gender, 
+	round(cast(ic.icustay_admit_age AS NUMERIC),0) as age, 
+	ic.weight_first / ((ic.height/ 100)^2) AS bmi,
+  ic.sapsi_first, 
+  ic.sofa_first,
+	round(cast(ic.hospital_los / (24*60) AS NUMERIC),0) as los_hospital,
+  ic.hospital_expire_flg as hospital_death,
+	ic.icustay_first_careunit as origin,
+  round(cast(ic.icustay_los / (24*60) AS NUMERIC),0) as los_icu,
+  ic.icustay_expire_flg as icu_death,
+  round(cast(CASE WHEN temp.dod < temp.admit_dt + interval '30' day THEN 1 ELSE 0 END AS NUMERIC),0)as J28_death,
+  round(cast(CASE WHEN temp.dod < temp.admit_dt + interval '1' year  THEN 1 ELSE 0 END AS NUMERIC),0) as Y1_death,
+  RANK() OVER (PARTITION BY ic.subject_id ORDER BY ic.icustay_intime) AS rank,
+  -- table demographique
+  dem.admission_type_descr,
+  -- table diagnostique
+  dia.sequence, 
+  dia.code,
+  dia.description
+  from icustayevents ie
+	FULL join icustay_detail ic
+	on ic.icustay_id = ie.icustay_id
+	FULL join tmp temp
+	on temp.hadm_id = ic.hadm_id
+	FULL join icd9 dia
+	on temp.hadm_id = dia.hadm_id
+	FULL join demographic_detail dem
+	on temp.hadm_id = dem.hadm_id
+	-- Premier diagnostique
+	--where sequence < 6
+  ;"
 )
 
-# Type réanimation (première unité)
+infos.mimic2.dialyse <- dbGetQuery(con,"
+  select ie.icustay_id
+    , max(
+        case
+          when ce.itemid in (152,148,149,146,147,151,150) and value1 is not null then 1
+          when ce.itemid in (229,235,241,247,253,259,265,271) and value1 = 'Dialysis Line' then 1
+          when ce.itemid = 582 and value1 in
+          ('CAVH Start','CAVH D/C','CVVHD Start','CVVHD D/C','Hemodialysis st','Hemodialysis end') then 1 else 0 end) as RRT
+  from icustay_detail ie
+  inner join chartevents ce
+  on ie.icustay_id = ce.icustay_id
+  and ce.itemid in
+    (152 ,148,149,146 ,147 ,151,150,229 ,235 ,241 ,247 ,253 ,259,265 ,271,582)
+    and ce.value1 is not null
+  group by ie.icustay_id ;"
+)
 
-type_reanimation <- dbGetQuery(con,"
-select subject_id, icustay_id,
-case
-  when icustay_first_careunit = 'MICU' then 1
-  when icustay_first_careunit = 'SICU' then 2
-  when icustay_first_careunit = 'TSICU' then 3
-  when icustay_first_careunit = 'CSRU' then 4
-  when icustay_first_careunit = 'NICU' then 5
-  else 6 end as care_unit
-from icustay_detail
-;")
-
-
+# Patients de plus de 15 ans
 infos_admission <- infos.mimic2 %>%
-  full_join(motif_admission,  by = c("subject_id")) %>%
-  full_join(type_reanimation,  by = c("subject_id","icustay_id")) 
+  # subset(age >= 15)%>%
+  mutate(
+    admission_hos  = as.POSIXct(ifelse(admission_hos > admission_icu, admission_icu, admission_hos),origin ="1970-01-01"),
+    discharge_hop = as.POSIXct(ifelse(discharge_hop < discharge_icu, discharge_icu, discharge_hop), origin ="1970-01-01"),
+    delais_hospital = round(difftime(time1 = discharge_hop, 
+                                     time2 = admission_hos, 
+                                     units = c("days")),0),
+    delais_icu = round(difftime(time1 = discharge_icu, 
+                                time2 = admission_icu, 
+                                units = c("days")),0)
+  ) %>% 
+  dplyr::select(c(subject_id, icustay_id, rank, gender, age, sapsi_first,
+                  sofa_first, bmi, care_unit, admission_type_descr,
+                  admission_icu , discharge_icu, admission_hos, discharge_hop,
+                  # description,
+                  los_icu, los_hospital, delais_hospital, delais_icu, icu_death,
+                  hospital_death, j28_death))%>%
+  unique() %>%
+  full_join( infos.mimic2.dialyse,  by="icustay_id")%>%
+  mutate(
+    rrt = ifelse(is.na(rrt), 0, rrt)
+  )
+length(unique(infos_admission$subject_id)) 
 
-infos_admission <- subset(infos_admission, 
-                          select = c(subject_id,gender,age, sapsi_first,
-                                     sofa_first, admission_type_descr, care_unit
-                          ))
-
-# 14293 patients
-saveRDS(infos_admission, paste0(dest_data,"infos_admission.RDS"))
-
+# 23756 patients
+save(infos_admission, file = "~/Recherche/Mimic-II/data/clean/mimic2/infos_admission.RData")
 
 #######################################################
 # -------- Informations sur les patients : données réactualisées
@@ -122,7 +184,7 @@ hypovolemie <- dbGetQuery(con,"
 # Ventilation 
 
 ventilation <- dbGetQuery(con,"
-		select subject_id,icustay_id, charttime, 
+		select subject_id,icustay_id, realtime, 
 		max(
     case
       when itemid is null or value1 is null then 0 
@@ -217,27 +279,30 @@ ventilation <- dbGetQuery(con,"
      224701,640,468 ,469,470,471,227287, 226732, 
      223834,
      467)
-	group by subject_id , icustay_id, charttime;
+	group by subject_id , icustay_id, realtime;
 ")
 
+dialyse <- dbGetQuery(con,"
+  select subject_id,icustay_id, realtime
+  , max(
+    case
+    when itemid in (152,148,149,146,147,151,150) and value1 is not null then 1
+    when itemid in (229,235,241,247,253,259,265,271) and value1 = 'Dialysis Line' then 1
+    when itemid = 582 and value1 in ('CAVH Start','CAVH D/C','CVVHD Start','CVVHD D/C','Hemodialysis st','Hemodialysis end') then 1
+    else 0 end
+  ) as RRT
+  from chartevents
+  group by subject_id , icustay_id, realtime;
+  ")
 
-saveRDS(amine,         paste0(dest_data,"amine.RDS"))
-saveRDS(lactate,       paste0(dest_data,"lactate.RDS"))
-saveRDS(sedation,      paste0(dest_data,"sedation.RDS"))
-saveRDS(curare,        paste0(dest_data,"curare.RDS"))
-saveRDS(ventilation,   paste0(dest_data,"ventilation.RDS"))
-saveRDS(hypovolemie,   paste0(dest_data,"hypovolemie.RDS"))
+save(amine, file = "~/Recherche/Mimic-II/data/clean/mimic2/amine.RData")
+save(dialyse, file = "~/Recherche/Mimic-II/data/clean/mimic2/dialyse.RData")
+save(lactate, file = "~/Recherche/Mimic-II/data/clean/mimic2/lactate.RData")
+save(sedation, file = "~/Recherche/Mimic-II/data/clean/mimic2/sedation.RData")
+save(curare, file = "~/Recherche/Mimic-II/data/clean/mimic2/curare.RData")
+save(ventilation, file = "~/Recherche/Mimic-II/data/clean/mimic2/ventilation.RData")
+save(hypovolemie, file = "~/Recherche/Mimic-II/data/clean/mimic2/hypovolemie.RData")
 
-
-
-# test <- dbGetQuery(con,"
-#	select * from icustay_id 
-#	where false
-# ; "
-# )
-# write.csv(test,"test.csv")
-
-
-
-
-
+# sous_data <- subset(infos.mimic2, select = c(subject_id, sequence, description))
+# sous_data <- subset(sous_data, subject_id %in% df_modelisation$id)
+# write.csv(sous_data,"diagnostic.csv", row.names = F)
