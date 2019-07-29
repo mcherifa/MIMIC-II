@@ -1,11 +1,6 @@
 # Les ligne commençant par '#' sont des commentaires.
 
-data
-gitrsa
-gitrsa.pub
-installation.md
-README.md
-resultats
-resultats_rewieving
-
+/*
+!scripts
+!README.md
 
